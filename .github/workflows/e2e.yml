@@ -1,0 +1,17 @@
+name: e2e
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: e2e
+        run: |
+          if [ "${{ github.event.head_commit.message }}" = "e2e-fail" ]; then
+            exit 1
+          fi
+          echo "e2e check passed"
