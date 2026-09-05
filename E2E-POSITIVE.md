@@ -1,0 +1,1 @@
+Fixture: positive E2E case. All CI must be green. Do not merge manually; the agent performs the squash merge.
