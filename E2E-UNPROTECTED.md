@@ -1,0 +1,1 @@
+Fixture: unprotected-branch E2E case. Base branch has no protection.
