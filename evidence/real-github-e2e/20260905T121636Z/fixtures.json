@@ -1,0 +1,11 @@
+{
+  "repository": "elazamey/github.ai2",
+  "workflowCommitOnMain": "6c024338bd0b954933229b8d1d5c4e43afeee99f",
+  "pullRequests": [
+    { "number": 1, "title": "E2E fixture: positive case (green CI)", "head": "e2e/positive", "base": "main", "headSha": "58e47eb0ba051341ad8f8d6c6521881781252784", "checks": ["e2e success (push run)", "e2e success (pull_request run)"], "mergeable": true, "mergeableState": "clean", "purpose": "positive E2E — to be squash-merged by the agent after required check is in place" },
+    { "number": 2, "title": "E2E fixture: CI-failure case (red CI)", "head": "e2e/failing-ci", "base": "main", "headSha": "8d45858e434b31b804c2048da2f0905c968e9e58", "commitMessage": "e2e-fail", "checks": ["e2e failure (push run)", "e2e success (pull_request run; head_commit absent for pull_request events)"], "mergeable": true, "mergeableState": "unstable", "purpose": "negative CI case — must be rejected 409" },
+    { "number": 3, "title": "E2E fixture: unprotected-branch case", "head": "e2e/unprotected-ci", "base": "unprotected-base", "headSha": "47cde06c5c4e9365ac8e21cd98924588913261cf", "checks": ["e2e success (push run)", "e2e success (pull_request run)"], "mergeable": true, "mergeableState": "clean", "purpose": "negative branch-protection case — must be rejected 409 once protection is readable" }
+  ],
+  "branches": ["e2e/positive", "e2e/failing-ci", "e2e/unprotected-ci", "unprotected-base"],
+  "stateAtEvidenceTime": "all three PRs open, none merged; main unchanged"
+}

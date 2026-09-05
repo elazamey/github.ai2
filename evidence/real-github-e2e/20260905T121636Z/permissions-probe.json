@@ -1,0 +1,16 @@
+{
+  "probedAt": "2026-09-05T12:04Z",
+  "tokenType": "GitHub App installation token (arena-ai-coding-agent[bot])",
+  "installationRepos": ["elazamey/github.ai2"],
+  "probes": [
+    { "op": "GET /repos/elazamey/arabic-devops-e2e-test/branches/main/protection", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "POST /repos/elazamey/arabic-devops-e2e-test/labels (write probe)", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "POST /user/repos (create dedicated e2e repo)", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "PUT /repos/elazamey/github.ai2/branches/main/protection (required check e2e, enforce_admins)", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "GET /repos/elazamey/github.ai2/branches/main/protection", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "POST /repos/elazamey/github.ai2/rulesets (require_status_checks rule)", "status": 403, "message": "Resource not accessible by integration" },
+    { "op": "POST /repos/elazamey/github.ai2/labels (write probe on installation repo)", "status": 201, "note": "label 'perm-probe' created, later deleted" },
+    { "op": "PUT /repos/elazamey/github.ai2/contents/.github/workflows/e2e.yml", "status": 201, "commit": "6c024338bd0b954933229b8d1d5c4e43afeee99f" }
+  ],
+  "conclusion": "Installation has Contents write (and Issues/PR write) but NO Administration permission: branch protection and rulesets are unreadable and unconfigurable; repository creation is denied. Therefore 'e2e' cannot be set/verified as Required Status Check from this token."
+}

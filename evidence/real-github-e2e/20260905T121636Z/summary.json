@@ -1,0 +1,56 @@
+{
+  "gate": "REAL-GITHUB-E2E",
+  "overallStatus": "BLOCKED",
+  "generatedAt": "2026-09-05T12:16:36Z",
+  "generatedBy": "real-github-e2e.mjs + driver (permission-reduced run)",
+  "localMvp": {
+    "status": "VERIFIED",
+    "command": "npm test (node smoke-test.mjs)",
+    "result": "PASS",
+    "checks": ["health", "allowlist", "plan", "github-pr", "ci", "branch-protection", "merge", "approval-replay", "cli-registry", "path-boundary", "ledger"],
+    "evidence": ["smoke-test.log", "smoke-ledger-20260905.jsonl"]
+  },
+  "realGitHub": {
+    "repository": "elazamey/github.ai2",
+    "whyThisRepository": "The Arena GitHub App installation covers ONLY elazamey/github.ai2. It has no access to elazamey/arabic-devops-e2e-test (403 on all writes) and cannot create new repositories (403). See permissions-probe.json.",
+    "nodeVersion": "v22.22.3",
+    "agentUrl": "http://127.0.0.1:8787",
+    "workflow": ".github/workflows/e2e.yml (job id: e2e, triggers: push + pull_request) — added to main in commit 6c024338bd0b954933229b8d1d5c4e43afeee99f",
+    "blocker": {
+      "type": "INSUFFICIENT_GITHUB_PERMISSIONS",
+      "missingPermission": "Administration (read+write) on the GitHub App installation",
+      "symptom": "GET/PUT /branches/{main}/protection and POST /rulesets all return 403 'Resource not accessible by integration'",
+      "consequence": "Cannot configure 'e2e' as Required Status Check on main, and cannot read protection state during merge verification",
+      "agentBehavior": "FAILS CLOSED — refuses to merge (403) when it cannot verify branch protection; no merge occurred"
+    },
+    "fixtures": {
+      "positive": { "pr": 1, "branch": "e2e/positive", "head": "58e47eb0ba051341ad8f8d6c6521881781252784", "checksOnHead": "2x e2e: success + success", "mergeable": "clean" },
+      "failedCi": { "pr": 2, "branch": "e2e/failing-ci", "head": "8d45858e434b31b804c2048da2f0905c968e9e58", "commitMessage": "e2e-fail", "checksOnHead": "1x e2e: success + 1x e2e: failure", "mergeable": "unstable" },
+      "unprotected": { "pr": 3, "branch": "e2e/unprotected-ci", "base": "unprotected-base", "head": "47cde06c5c4e9365ac8e21cd98924588913261cf", "checksOnHead": "2x e2e: success + success", "mergeable": "clean", "note": "base branch has no protection; intended 409 unreachable because protection READ returns 403 with current token" }
+    },
+    "scenarios": [
+      { "name": "Real PR", "status": "PASS", "detail": "PR #1 open on real GitHub, mergeable=clean" },
+      { "name": "Real CI", "status": "PASS", "detail": "real check runs (job e2e) completed on all fixture head shas" },
+      { "name": "Required Check e2e on main", "status": "BLOCKED", "detail": "cannot set (PUT protection 403, POST rulesets 403) or verify (GET protection 403) — missing Administration permission" },
+      { "name": "Positive E2E (squash merge)", "status": "BLOCKED", "detail": "plan+approve on green PR #1 -> 403 at branch-protection verification; agent refused; main unchanged (6c024338...)" },
+      { "name": "Approval Replay", "status": "PASS (blocked as intended)", "detail": "replay of consumed approvalId -> 404 'الموافقة غير موجودة أو انتهت صلاحيتها'" },
+      { "name": "CI Failure", "status": "PASS (blocked as intended)", "detail": "approve on red PR #2 -> 409 'فشل 1 من فحوصات CI؛ تم منع الدمج'" },
+      { "name": "Unprotected Branch", "status": "BLOCKED (fixture staged, case unreachable)", "detail": "protection read returns 403 (permission) instead of 404 (unprotected), so intended 409 cannot be produced with current token; fixture PR #3 staged for re-run" },
+      { "name": "Repository خارج القائمة (allowlist)", "status": "PASS (blocked as intended)", "detail": "elazamey/not-in-allowlist -> 403 'المستودع ... غير موجود في GITHUB_ALLOWED_REPOSITORIES'" },
+      { "name": "Ledger Evidence", "status": "PASS", "detail": "13 append-only entries: 2 PLAN_CREATED, 2 APPROVAL, 2 TOOL_RESULT, 1 POLICY_CHECK, 2 EXECUTION BLOCKED, 4 ERROR (incl. replay 404)" }
+    ],
+    "noMergeOccurred": {
+      "mainShaBefore": "6c024338bd0b954933229b8d1d5c4e43afeee99f",
+      "mainShaAfter": "6c024338bd0b954933229b8d1d5c4e43afeee99f",
+      "allFixturePrsStillOpen": true
+    }
+  },
+  "environmentNote": "Sandbox TLS: egress is MITM'd by 'E2B Proxy CA'; Node fetch requires NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt (curl/gh unaffected).",
+  "rerunChecklist": [
+    "1. Grant the Arena GitHub App Administration (read+write) on the target repo (or run locally with a PAT that has admin on it)",
+    "2. Set required status check 'e2e' on main (PUT /branches/main/protection with contexts [\"e2e\"] — payload was prepared in /tmp/protection.json equivalent, see VERDICT doc)",
+    "3. Re-run: NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt E2E_CONFIRM_MERGE=YES npm run test:real (E2E_PR_NUMBER=1 E2E_FAILED_CI_PR=2 E2E_UNPROTECTED_PR=3, GITHUB_REPOSITORY=elazamey/github.ai2)",
+    "4. Expect: PASS + squash merge of PR #1 + evidence bundle written by the harness itself"
+  ],
+  "tokenRecorded": false
+}

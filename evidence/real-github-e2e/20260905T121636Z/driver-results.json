@@ -1,0 +1,8 @@
+[
+  { "case": "A1 plan positive PR#1", "status": 200, "state": "WAITING_APPROVAL", "approvalId": true },
+  { "case": "A2 approve positive (expect 403: protection unreadable -> fail closed)", "status": 403, "error": "Resource not accessible by integration" },
+  { "case": "A3 approval replay (expect 404 one-shot)", "status": 404, "error": "الموافقة غير موجودة أو انتهت صلاحيتها" },
+  { "case": "B1 plan failed-CI PR#2", "status": 200, "state": "WAITING_APPROVAL" },
+  { "case": "B2 approve failed-CI (expect 409)", "status": 409, "error": "فشل 1 من فحوصات CI؛ تم منع الدمج" },
+  { "case": "C1 unauthorized repository (expect 403 allowlist)", "status": 403, "error": "المستودع elazamey/not-in-allowlist غير موجود في GITHUB_ALLOWED_REPOSITORIES" }
+]

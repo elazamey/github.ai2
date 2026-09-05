@@ -1,0 +1,18 @@
+# npm test (node smoke-test.mjs) — 2026-09-05, local mock, no real token
+{
+  "status": "PASS",
+  "checks": [
+    "health",
+    "allowlist",
+    "plan",
+    "github-pr",
+    "ci",
+    "branch-protection",
+    "merge",
+    "approval-replay",
+    "cli-registry",
+    "path-boundary",
+    "ledger"
+  ]
+}
+# Full append-only ledger of that smoke run: smoke-ledger-20260905.jsonl (23 entries)

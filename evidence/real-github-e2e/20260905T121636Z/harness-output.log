@@ -1,0 +1,16 @@
+# Run 1 (12:15Z, before TLS CA fix) — sandbox networking failure, not an agent verdict:
+> node real-github-e2e.mjs --execute
+REAL-GITHUB-E2E BLOCKED: fetch failed
+harness exit code: 1
+
+# Run 2 (12:16Z, with NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt) — official result:
+> node real-github-e2e.mjs --execute
+REAL-GITHUB-E2E BLOCKED: GitHub API 403: Resource not accessible by integration
+harness exit code: 1
+
+# Interpretation: preflight reaches real GitHub; PR #1 is open and all its checks are green,
+# but the branch-protection READ (GET /repos/elazamey/github.ai2/branches/main/protection)
+# returns 403 for this installation token (missing Administration permission).
+# The harness is designed to fail closed on any non-2xx/404 protection response -> BLOCKED.
+# No plan was created and no merge was attempted at the agent level for this run;
+# the agent-level attempt (with ledger entries) is in driver-results.json / ledger.json.
