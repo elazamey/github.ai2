@@ -1,0 +1,1 @@
+Fixture: CI-failure E2E case. Commit message triggers the e2e-fail hook.
