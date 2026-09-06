@@ -21,7 +21,6 @@ permissions:
   pull-requests: write
   checks: read
   statuses: read
-  administration: read
 
 concurrency:
   group: gatekeeper-${{ github.event.pull_request.number || inputs.pr_number || github.sha }}
@@ -56,7 +55,11 @@ jobs:
       - name: Run gatekeeper
         if: steps.prs.outputs.list != ''
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN cannot read branch protection (that needs admin rights, and
+          # `administration` is not a grantable GITHUB_TOKEN permission). Supply a PAT
+          # with `repo` scope as GATEKEEPER_TOKEN to verify the branch-protected rule;
+          # otherwise it is reported as UNKNOWN and auto-merge is withheld.
+          GITHUB_TOKEN: ${{ secrets.GATEKEEPER_TOKEN || secrets.GITHUB_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           AUTO_MERGE: ${{ vars.GATEKEEPER_AUTO_MERGE || 'false' }}
           MERGE_METHOD: ${{ vars.GATEKEEPER_MERGE_METHOD || 'squash' }}

@@ -98,11 +98,14 @@ PR_NUMBER=1 DRY_RUN=true npm run gatekeeper
 `DRY_RUN=true` prints the verdict without commenting or merging — the safest way to
 try it on a real PR.
 
-> Reading branch protection requires admin rights. If the token lacks them the API
-> returns `403`, and the rule is recorded as `UNKNOWN` — not as a pass and not as a
-> failure. The PR comment shows it under "Unverified rules" and auto-merge is
-> withheld. In Actions the workflow requests `administration: read`, so the rule is
-> normally evaluated for real.
+> **Reading branch protection requires admin rights, and the built-in `GITHUB_TOKEN`
+> cannot be granted them** — `administration` is not a valid `permissions:` key, and
+> adding it makes the whole workflow fail to start. So by default the API returns
+> `403`, the rule is recorded as `UNKNOWN` (neither pass nor failure), the comment
+> lists it under "Unverified rules", and auto-merge is withheld.
+>
+> To verify `branch-protected` for real, add a PAT with `repo` scope as the
+> `GATEKEEPER_TOKEN` secret; the workflow prefers it over `GITHUB_TOKEN`.
 
 ### Tests
 
