@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluate, summarizeChecks, summarizeReviews } from '../src/rules.mjs';
+import {
+  evaluate,
+  summarizeChecks,
+  summarizeReviews,
+  VERIFIED,
+  BLOCKED,
+  SKIPPED_WITH_WARNING,
+  UNKNOWN,
+} from '../src/rules.mjs';
 import { renderComment } from '../src/report.mjs';
 
 const basePR = {
@@ -40,15 +48,60 @@ test('fixture #3 unprotected branch => blocked on branch-protected', () => {
   assert.equal(ruleOf(v, 'branch-protected').ok, false);
 });
 
-test('branch protection rule can be disabled', () => {
+test('disabling enforcement downgrades the rule but withholds auto-merge', () => {
   const v = evaluate({
     pr: basePR,
     checks: green,
     branchProtected: false,
     options: { requireBranchProtection: false },
   });
+  // No blocker: a human may still merge.
   assert.equal(v.pass, true);
-  assert.equal(ruleOf(v, 'branch-protected'), undefined);
+  assert.equal(ruleOf(v, 'branch-protected').status, SKIPPED_WITH_WARNING);
+  // But an unenforced security rule must never authorize an automated merge.
+  assert.equal(v.autoMergeSafe, false);
+  assert.equal(v.criticalUnverified.length, 1);
+});
+
+test('403 on branch protection => UNKNOWN, never a silent pass', () => {
+  const v = evaluate({ pr: basePR, checks: green, branchProtected: null });
+  const rule = ruleOf(v, 'branch-protected');
+  assert.equal(rule.status, UNKNOWN);
+  assert.equal(rule.ok, false);
+  // Not a blocker...
+  assert.equal(v.pass, true);
+  // ...but categorically not auto-mergeable.
+  assert.equal(v.autoMergeSafe, false);
+  assert.deepEqual(v.criticalUnverified.map((r) => r.id), ['branch-protected']);
+  assert.match(rule.detail, /auto-merge withheld/);
+});
+
+test('UNKNOWN is distinct from VERIFIED and from BLOCKED', () => {
+  const unknown = evaluate({ pr: basePR, checks: green, branchProtected: null });
+  const verified = evaluate({ pr: basePR, checks: green, branchProtected: true });
+  const blocked = evaluate({ pr: basePR, checks: green, branchProtected: false });
+
+  assert.equal(ruleOf(unknown, 'branch-protected').status, UNKNOWN);
+  assert.equal(ruleOf(verified, 'branch-protected').status, VERIFIED);
+  assert.equal(ruleOf(blocked, 'branch-protected').status, BLOCKED);
+
+  assert.equal(unknown.autoMergeSafe, false);
+  assert.equal(verified.autoMergeSafe, true);
+  assert.equal(blocked.pass, false);
+});
+
+test('fully verified green PR is the only auto-merge-safe state', () => {
+  const v = evaluate({ pr: basePR, checks: green, branchProtected: true });
+  assert.equal(v.autoMergeSafe, true);
+  assert.equal(v.unverified.length, 0);
+  assert.ok(v.rules.every((r) => r.status === VERIFIED));
+});
+
+test('a blocker keeps autoMergeSafe false even when everything else is verified', () => {
+  const v = evaluate({ pr: basePR, checks: red, branchProtected: true });
+  assert.equal(v.pass, false);
+  assert.equal(v.autoMergeSafe, false);
+  assert.deepEqual(v.blocked.map((r) => r.id), ['checks-green']);
 });
 
 test('pending checks block the merge', () => {
@@ -163,4 +216,15 @@ test('report renders pass and blocked states', () => {
   );
   assert.match(blocked, /merge blocked/);
   assert.match(blocked, /Blockers \(2\)/);
+});
+
+test('report distinguishes unverified from passing and withholds auto-merge', () => {
+  const out = renderComment(
+    evaluate({ pr: basePR, checks: green, branchProtected: null }),
+    { repo: 'o/r', prNumber: 3, autoMerge: true }
+  );
+  assert.match(out, /not fully verified/);
+  assert.match(out, /Unverified rules \(1\)/);
+  assert.match(out, /withheld/);
+  assert.doesNotMatch(out, /merging now/);
 });

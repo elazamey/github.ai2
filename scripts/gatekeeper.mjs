@@ -117,15 +117,17 @@ async function upsertComment(bodyText) {
 async function main() {
   const pr = await gh(`/repos/${owner}/${repo}/pulls/${prNumber}`);
   const checks = await collectChecks(pr.head.sha);
-  // Reading branch protection requires admin rights; if the token lacks them we
-  // cannot prove the branch is unprotected, so the rule is skipped rather than failed.
+  // Reading branch protection requires admin rights. Without them we can neither
+  // prove nor disprove protection, so the rule becomes UNKNOWN (never a silent pass).
   const protection = await gh(
     `/repos/${owner}/${repo}/branches/${encodeURIComponent(pr.base.ref)}/protection`,
     { allow404: true, allow403: true }
   );
   const protectionUnknown = Boolean(protection?.__forbidden);
   if (protectionUnknown) {
-    console.log('::warning::token cannot read branch protection - rule skipped');
+    console.log(
+      '::warning::token cannot read branch protection - rule marked UNKNOWN (auto-merge withheld)'
+    );
   }
   const reviews = await gh(
     `/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`
@@ -146,9 +148,9 @@ async function main() {
     checks,
     branchProtected: protectionUnknown ? null : Boolean(protection),
     reviews: (reviews || []).map((r) => ({ state: r.state, user: r.user?.login })),
-    options: {
-      requireBranchProtection: REQUIRE_BRANCH_PROTECTION && !protectionUnknown,
-    },
+    // Left at the configured value: an unreadable protection API yields
+    // branchProtected=null -> UNKNOWN, which is handled by the rule engine.
+    options: { requireBranchProtection: REQUIRE_BRANCH_PROTECTION },
   });
 
   const comment = renderComment(verdict, {
@@ -165,7 +167,15 @@ async function main() {
     console.log(`::notice::gatekeeper comment ${action}`);
   }
 
-  if (verdict.pass && AUTO_MERGE && !DRY_RUN) {
+  if (AUTO_MERGE && verdict.pass && !verdict.autoMergeSafe) {
+    const names = verdict.unverified.map((r) => r.id).join(', ');
+    console.log(
+      `::warning::auto-merge withheld for PR #${prNumber}: unverified rule(s): ${names}`
+    );
+  }
+
+  // autoMergeSafe (not `pass`) is the gate: an UNKNOWN security rule never merges.
+  if (verdict.autoMergeSafe && AUTO_MERGE && !DRY_RUN) {
     await gh(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
       method: 'PUT',
       body: { merge_method: MERGE_METHOD },

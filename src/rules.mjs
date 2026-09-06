@@ -1,6 +1,26 @@
 /**
  * Pure merge-decision rules. No network, no side effects -> easy to unit test.
+ *
+ * Every rule resolves to one of four states. The distinction matters for security:
+ * a rule we could not evaluate must never look like a rule that passed.
+ *
+ *   VERIFIED               checked and satisfied
+ *   BLOCKED                checked and violated -> blocks the merge
+ *   SKIPPED_WITH_WARNING   intentionally not enforced by configuration
+ *   UNKNOWN                could not be evaluated (e.g. API 403) -> never auto-merge
+ *
+ * `pass` means "nothing is BLOCKED" (safe to merge by hand).
+ * `autoMergeSafe` additionally requires that every rule is VERIFIED, so an
+ * unverifiable security rule can never silently authorize an automated merge.
  */
+
+export const VERIFIED = 'VERIFIED';
+export const BLOCKED = 'BLOCKED';
+export const SKIPPED_WITH_WARNING = 'SKIPPED_WITH_WARNING';
+export const UNKNOWN = 'UNKNOWN';
+
+/** Rules that must be VERIFIED before any automated merge, no matter the config. */
+export const SECURITY_CRITICAL = new Set(['branch-protected']);
 
 /** Conclusions that do not block a merge. */
 const OK_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
@@ -48,7 +68,13 @@ export function evaluate({
   const rv = summarizeReviews(reviews);
   const rules = [];
 
-  const add = (id, ok, label, detail) => rules.push({ id, ok, label, detail });
+  /** @param {string} id @param {string} status @param {string} label @param {string} detail */
+  const push = (id, status, label, detail) =>
+    rules.push({ id, status, ok: status === VERIFIED, label, detail });
+
+  /** Boolean shorthand: true -> VERIFIED, false -> BLOCKED. */
+  const add = (id, ok, label, detail) =>
+    push(id, ok ? VERIFIED : BLOCKED, label, detail);
 
   add(
     'open',
@@ -100,13 +126,34 @@ export function evaluate({
     ck.total > 0 ? `${ck.total} check(s)` : 'no CI reported for this commit'
   );
 
-  if (requireBranchProtection) {
-    add(
-      'branch-protected',
-      branchProtected,
-      `Base branch \`${pr.base}\` is protected`,
-      branchProtected ? 'protection rules active' : 'NO branch protection configured'
-    );
+  // Security-critical, and deliberately tri-state: `null` means we were not allowed
+  // to read the protection API, which is NOT the same as "protected".
+  {
+    const label = `Base branch \`${pr.base}\` is protected`;
+    if (branchProtected === null || branchProtected === undefined) {
+      push(
+        'branch-protected',
+        UNKNOWN,
+        label,
+        'could not read branch protection (insufficient token permissions) - auto-merge withheld'
+      );
+    } else if (!requireBranchProtection) {
+      push(
+        'branch-protected',
+        SKIPPED_WITH_WARNING,
+        label,
+        branchProtected
+          ? 'protection rules active (enforcement disabled by configuration)'
+          : 'NOT protected, but enforcement is disabled by configuration - auto-merge withheld'
+      );
+    } else {
+      push(
+        'branch-protected',
+        branchProtected ? VERIFIED : BLOCKED,
+        label,
+        branchProtected ? 'protection rules active' : 'NO branch protection configured'
+      );
+    }
   }
 
   add(
@@ -132,5 +179,23 @@ export function evaluate({
     (pr.labels || []).join(', ') || 'no labels'
   );
 
-  return { pass: rules.every((r) => r.ok), rules, checks: ck, reviews: rv };
+  const blocked = rules.filter((r) => r.status === BLOCKED);
+  const unverified = rules.filter(
+    (r) => r.status === UNKNOWN || r.status === SKIPPED_WITH_WARNING
+  );
+  const criticalUnverified = unverified.filter((r) => SECURITY_CRITICAL.has(r.id));
+
+  const pass = blocked.length === 0;
+
+  return {
+    pass,
+    // An unverifiable rule must never authorize an automated merge.
+    autoMergeSafe: pass && unverified.length === 0,
+    blocked,
+    unverified,
+    criticalUnverified,
+    rules,
+    checks: ck,
+    reviews: rv,
+  };
 }

@@ -1,33 +1,66 @@
 /** Renders the gatekeeper verdict as a Markdown PR comment. */
 
+import { VERIFIED, BLOCKED, SKIPPED_WITH_WARNING, UNKNOWN } from './rules.mjs';
+
+const ICON = {
+  [VERIFIED]: '✅',
+  [BLOCKED]: '❌',
+  [SKIPPED_WITH_WARNING]: '⚠️',
+  [UNKNOWN]: '❔',
+};
+
+const STATUS_LABEL = {
+  [VERIFIED]: 'verified',
+  [BLOCKED]: 'blocked',
+  [SKIPPED_WITH_WARNING]: 'skipped',
+  [UNKNOWN]: 'unknown',
+};
+
 export function renderComment(verdict, ctx = {}) {
   const { repo = '', prNumber = '', autoMerge = false, dryRun = false } = ctx;
 
   const head = verdict.pass
-    ? '## ✅ PR Gatekeeper — ready to merge'
+    ? verdict.autoMergeSafe
+      ? '## ✅ PR Gatekeeper — ready to merge'
+      : '## ⚠️ PR Gatekeeper — no blockers, but not fully verified'
     : '## ⛔ PR Gatekeeper — merge blocked';
 
   const rows = verdict.rules
-    .map((r) => `| ${r.ok ? '✅' : '❌'} | ${r.label} | ${r.detail} |`)
+    .map(
+      (r) =>
+        `| ${ICON[r.status] || '•'} | ${r.label} | \`${STATUS_LABEL[r.status] || r.status}\` | ${r.detail} |`
+    )
     .join('\n');
-
-  const blockers = verdict.rules.filter((r) => !r.ok);
 
   const lines = [
     head,
     '',
     `**Repository:** \`${repo}\` · **PR:** #${prNumber}`,
     '',
-    '| | Rule | Detail |',
-    '| :-: | --- | --- |',
+    '| | Rule | Status | Detail |',
+    '| :-: | --- | --- | --- |',
     rows,
     '',
   ];
 
-  if (blockers.length) {
+  if (verdict.blocked.length) {
     lines.push(
-      `### Blockers (${blockers.length})`,
-      ...blockers.map((b) => `- **${b.label}** — ${b.detail}`),
+      `### ❌ Blockers (${verdict.blocked.length})`,
+      ...verdict.blocked.map((b) => `- **${b.label}** — ${b.detail}`),
+      ''
+    );
+  }
+
+  if (verdict.unverified.length) {
+    lines.push(
+      `### ❔ Unverified rules (${verdict.unverified.length})`,
+      ...verdict.unverified.map(
+        (u) => `- **${u.label}** — \`${STATUS_LABEL[u.status]}\` — ${u.detail}`
+      ),
+      '',
+      '> These rules could not be confirmed. They do **not** block a manual merge, but',
+      '> they do prevent automated merging — an unverified security rule must never',
+      '> be treated as a pass.',
       ''
     );
   }
@@ -38,16 +71,21 @@ export function renderComment(verdict, ctx = {}) {
     ''
   );
 
-  if (verdict.pass) {
-    lines.push(
-      autoMerge
-        ? dryRun
-          ? '_Auto-merge is enabled, but this was a dry run — nothing was merged._'
-          : '_Auto-merge is enabled — merging now._'
-        : '_Auto-merge is disabled — merge manually when ready._'
-    );
-  } else {
+  if (!verdict.pass) {
     lines.push('_Resolve the blockers above; this comment updates automatically._');
+  } else if (!autoMerge) {
+    lines.push('_Auto-merge is disabled — merge manually when ready._');
+  } else if (!verdict.autoMergeSafe) {
+    const names = verdict.criticalUnverified.length
+      ? verdict.criticalUnverified.map((r) => `\`${r.id}\``).join(', ')
+      : verdict.unverified.map((r) => `\`${r.id}\``).join(', ');
+    lines.push(
+      `_Auto-merge is enabled but **withheld**: ${names} could not be verified._`
+    );
+  } else if (dryRun) {
+    lines.push('_Auto-merge is enabled, but this was a dry run — nothing was merged._');
+  } else {
+    lines.push('_Auto-merge is enabled and every rule is verified — merging now._');
   }
 
   if (dryRun) lines.push('', '> 🧪 dry-run mode: no comment or merge was performed.');
