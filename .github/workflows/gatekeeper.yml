@@ -1,0 +1,69 @@
+name: pr-gatekeeper
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to evaluate
+        required: true
+      dry_run:
+        description: Report only, do not comment or merge
+        default: 'false'
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+  administration: read
+
+concurrency:
+  group: gatekeeper-${{ github.event.pull_request.number || inputs.pr_number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  gatekeeper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Resolve PR numbers
+        id: prs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            echo "list=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.pull_request.number }}" ]; then
+            echo "list=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          else
+            # check_suite: find PRs pointing at this head sha
+            nums=$(gh pr list --state open --json number,headRefOid \
+              --jq '[.[] | select(.headRefOid=="${{ github.sha }}") | .number] | join(" ")')
+            echo "list=$nums" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run gatekeeper
+        if: steps.prs.outputs.list != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          AUTO_MERGE: ${{ vars.GATEKEEPER_AUTO_MERGE || 'false' }}
+          MERGE_METHOD: ${{ vars.GATEKEEPER_MERGE_METHOD || 'squash' }}
+          REQUIRE_BRANCH_PROTECTION: ${{ vars.GATEKEEPER_REQUIRE_PROTECTION || 'true' }}
+        run: |
+          for pr in ${{ steps.prs.outputs.list }}; do
+            echo "::group::PR #$pr"
+            PR_NUMBER="$pr" node scripts/gatekeeper.mjs
+            echo "::endgroup::"
+          done
