@@ -1,0 +1,13 @@
+{
+  "name": "pr-gatekeeper-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Rule-based PR gatekeeper: checks CI, branch protection and reviews, comments a summary and auto-merges when safe.",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "gatekeeper": "node scripts/gatekeeper.mjs"
+  }
+}
