@@ -25,6 +25,28 @@ export const SECURITY_CRITICAL = new Set(['branch-protected']);
 /** Conclusions that do not block a merge. */
 const OK_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
 
+/**
+ * Normalizes raw check-runs before evaluation.
+ *
+ * - Drops the gatekeeper's own check: it runs as a check itself, so it would always
+ *   observe itself as in-progress and could never reach a settled verdict.
+ * - Deduplicates by name, keeping the newest: the same workflow can report twice on
+ *   one sha (a `push` run and a `pull_request` run), or be re-run.
+ *
+ * @param {Array<{name:string,startedAt?:string}>} runs
+ * @param {{selfCheckName?:string}} opts
+ */
+export function normalizeChecks(runs = [], { selfCheckName = 'gatekeeper' } = {}) {
+  const byName = new Map();
+  for (const r of runs) {
+    if (r.name === selfCheckName) continue;
+    const ts = Date.parse(r.startedAt || 0) || 0;
+    const prev = byName.get(r.name);
+    if (!prev || ts >= prev.__ts) byName.set(r.name, { ...r, __ts: ts });
+  }
+  return [...byName.values()].map(({ __ts, ...c }) => c);
+}
+
 export function summarizeChecks(checks = []) {
   const pending = [];
   const failing = [];

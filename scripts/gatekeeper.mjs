@@ -17,7 +17,7 @@
  *   REQUIRE_BRANCH_PROTECTION  "true" (default) -> base branch must be protected
  */
 
-import { evaluate } from '../src/rules.mjs';
+import { evaluate, normalizeChecks } from '../src/rules.mjs';
 import { renderComment } from '../src/report.mjs';
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
@@ -69,6 +69,12 @@ async function gh(path, { method = 'GET', body, allow404 = false, allow403 = fal
   return data;
 }
 
+/**
+ * The gatekeeper runs as a check itself, so it would otherwise always observe its
+ * own run as "in progress" and never reach a settled verdict. Exclude self.
+ */
+const SELF_CHECK = process.env.SELF_CHECK_NAME || 'gatekeeper';
+
 async function collectChecks(sha) {
   const [runs, statuses] = await Promise.all([
     gh(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`),
@@ -78,8 +84,9 @@ async function collectChecks(sha) {
   const checks = (runs?.check_runs || []).map((r) => ({
     name: r.name,
     status: r.status, // queued | in_progress | completed
-    conclusion: r.conclusion, // success | failure | neutral | cancelled | skipped | ...
+    conclusion: r.conclusion, // success | failure | neutral | skipped | ...
     url: r.html_url,
+    startedAt: r.started_at,
   }));
 
   for (const s of statuses?.statuses || []) {
@@ -91,7 +98,12 @@ async function collectChecks(sha) {
       url: s.target_url,
     });
   }
-  return checks;
+  const normalized = normalizeChecks(checks, { selfCheckName: SELF_CHECK });
+  const dropped = checks.length - normalized.length;
+  if (dropped > 0) {
+    console.log(`::notice::ignored ${dropped} self/duplicate check(s)`);
+  }
+  return normalized;
 }
 
 async function upsertComment(bodyText) {

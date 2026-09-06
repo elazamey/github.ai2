@@ -51,6 +51,12 @@ instead of degrading into a silent pass.
 | `approvals` | Fewer approvals than `minApprovals` (opt-in) |
 | `no-blocking-label` | PR carries `do-not-merge`, `wip` or `blocked` |
 
+Before evaluation the check list is normalized: the gatekeeper's **own** check run is
+excluded (it runs as a check itself, so it would always see itself as in progress and
+never settle), and duplicate check names collapse to the newest run (the same workflow
+often reports twice on one sha, once for `push` and once for `pull_request`). Override
+the self name with `SELF_CHECK_NAME`.
+
 `neutral` and `skipped` check conclusions are treated as passing. Only the **latest**
 review per user counts, so a `CHANGES_REQUESTED` later replaced by `APPROVED` no
 longer blocks.

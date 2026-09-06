@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   evaluate,
   summarizeChecks,
+  normalizeChecks,
   summarizeReviews,
   VERIFIED,
   BLOCKED,
@@ -227,4 +228,80 @@ test('report distinguishes unverified from passing and withholds auto-merge', ()
   assert.match(out, /Unverified rules \(1\)/);
   assert.match(out, /withheld/);
   assert.doesNotMatch(out, /merging now/);
+});
+
+
+// --- normalizeChecks: observed in the real Actions run on PR #4 ---
+
+test('the gatekeeper does not count itself as a pending check', () => {
+  // Observed live: "4 still running: gatekeeper, e2e, unit, unit" - the bot runs as
+  // a check, so it saw its own in-progress run and could never settle.
+  const raw = [
+    { name: 'gatekeeper', status: 'in_progress', conclusion: null },
+    { name: 'e2e', status: 'completed', conclusion: 'success' },
+  ];
+  const out = normalizeChecks(raw);
+  assert.deepEqual(out.map((c) => c.name), ['e2e']);
+
+  const v = evaluate({ pr: basePR, checks: out, branchProtected: true });
+  assert.equal(ruleOf(v, 'checks-complete').ok, true);
+  assert.equal(v.autoMergeSafe, true);
+});
+
+test('self-check name is configurable', () => {
+  const raw = [{ name: 'my-bot', status: 'in_progress', conclusion: null }];
+  assert.equal(normalizeChecks(raw, { selfCheckName: 'my-bot' }).length, 0);
+  assert.equal(normalizeChecks(raw).length, 1);
+});
+
+test('duplicate check names collapse to the newest run', () => {
+  // Observed live: "unit, unit" - push and pull_request runs of the same workflow.
+  const raw = [
+    {
+      name: 'unit',
+      status: 'completed',
+      conclusion: 'failure',
+      startedAt: '2026-09-06T10:00:00Z',
+    },
+    {
+      name: 'unit',
+      status: 'completed',
+      conclusion: 'success',
+      startedAt: '2026-09-06T10:05:00Z',
+    },
+  ];
+  const out = normalizeChecks(raw);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].conclusion, 'success');
+});
+
+test('a newer pending run supersedes an older success', () => {
+  const out = normalizeChecks([
+    {
+      name: 'unit',
+      status: 'completed',
+      conclusion: 'success',
+      startedAt: '2026-09-06T10:00:00Z',
+    },
+    {
+      name: 'unit',
+      status: 'in_progress',
+      conclusion: null,
+      startedAt: '2026-09-06T10:05:00Z',
+    },
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].status, 'in_progress');
+  const v = evaluate({ pr: basePR, checks: out, branchProtected: true });
+  assert.equal(ruleOf(v, 'checks-complete').ok, false);
+});
+
+test('normalizeChecks handles missing timestamps and empty input', () => {
+  assert.deepEqual(normalizeChecks([]), []);
+  assert.deepEqual(normalizeChecks(), []);
+  const out = normalizeChecks([
+    { name: 'a', status: 'completed', conclusion: 'success' },
+    { name: 'a', status: 'completed', conclusion: 'failure' },
+  ]);
+  assert.equal(out.length, 1);
 });
