@@ -5,6 +5,11 @@ import {
   summarizeChecks,
   normalizeChecks,
   resolveProtection,
+  readClassicProtection,
+  readRulesetProtection,
+  PROTECTED,
+  NOT_PROTECTED,
+  ERR,
   summarizeReviews,
   VERIFIED,
   BLOCKED,
@@ -308,46 +313,119 @@ test('normalizeChecks handles missing timestamps and empty input', () => {
 });
 
 
-// --- resolveProtection: no admin rights required ---
+// --- protection sources: tri-state, never collapse an error into "no" ---
 
-test('classic protection alone marks the branch protected', () => {
-  const r = resolveProtection({ classicProtected: true, rules: [] });
-  assert.equal(r.protected, true);
+test('readClassicProtection tri-states HTTP errors', () => {
+  assert.equal(readClassicProtection({ status: 200, body: { protected: true } }), PROTECTED);
+  assert.equal(readClassicProtection({ status: 200, body: { protected: false } }), NOT_PROTECTED);
+  for (const status of [401, 403, 404, 500]) {
+    assert.equal(readClassicProtection({ status }), ERR, `HTTP ${status}`);
+  }
+  assert.equal(readClassicProtection(null), ERR);
 });
 
-test('a ruleset alone marks the branch protected', () => {
-  // Classic protection and rulesets are independent mechanisms.
-  const r = resolveProtection({ classicProtected: false, rules: [{ type: 'pull_request' }] });
-  assert.equal(r.protected, true);
+test('readRulesetProtection counts only ACTIVE rulesets', () => {
+  // A ruleset that exists but is disabled or in dry-run constrains nothing.
+  assert.equal(readRulesetProtection({ status: 200, body: [{ enforcement: 'active' }] }), PROTECTED);
+  assert.equal(readRulesetProtection({ status: 200, body: [{ enforcement: 'disabled' }] }), NOT_PROTECTED);
+  assert.equal(readRulesetProtection({ status: 200, body: [{ enforcement: 'evaluate' }] }), NOT_PROTECTED);
+  assert.equal(readRulesetProtection({ status: 200, body: [] }), NOT_PROTECTED);
+  // Missing enforcement info must not be assumed active.
+  assert.equal(readRulesetProtection({ status: 200, body: [{}] }), NOT_PROTECTED);
+  // Mixed: one active is enough.
+  assert.equal(
+    readRulesetProtection({ status: 200, body: [{ enforcement: 'disabled' }, { enforcement: 'active' }] }),
+    PROTECTED
+  );
 });
 
-test('both sources empty means genuinely unprotected, not unknown', () => {
-  const r = resolveProtection({ classicProtected: false, rules: [] });
-  assert.equal(r.protected, false);
-  assert.equal(r.source, 'branch+rulesets');
+test('readRulesetProtection tri-states HTTP errors and bad payloads', () => {
+  for (const status of [401, 403, 404, 500]) {
+    assert.equal(readRulesetProtection({ status }), ERR, `HTTP ${status}`);
+  }
+  assert.equal(readRulesetProtection({ status: 200, body: null }), ERR);
 });
 
-test('only UNKNOWN when every source is unreadable', () => {
-  assert.equal(resolveProtection({}).protected, null);
-  assert.equal(resolveProtection({ classicProtected: null, rules: null }).protected, null);
-  // A single readable source is still enough to decide.
-  assert.equal(resolveProtection({ classicProtected: true, rules: null }).protected, true);
-  assert.equal(resolveProtection({ classicProtected: null, rules: [] }).protected, false);
+// The decision table for resolveProtection.
+const TABLE = [
+  { classic: PROTECTED,     rulesets: NOT_PROTECTED, expected: true,  why: 'classic alone protects' },
+  { classic: NOT_PROTECTED, rulesets: PROTECTED,     expected: true,  why: 'ruleset alone protects' },
+  { classic: PROTECTED,     rulesets: PROTECTED,     expected: true,  why: 'both protect' },
+  { classic: NOT_PROTECTED, rulesets: NOT_PROTECTED, expected: false, why: 'fully read, both negative' },
+  { classic: ERR,           rulesets: ERR,           expected: null,  why: 'nothing readable' },
+  { classic: NOT_PROTECTED, rulesets: ERR,           expected: null,  why: 'half-read negative is a doubt' },
+  { classic: ERR,           rulesets: NOT_PROTECTED, expected: null,  why: 'half-read negative is a doubt' },
+  { classic: PROTECTED,     rulesets: ERR,           expected: true,  why: 'positive evidence still decides' },
+  { classic: ERR,           rulesets: PROTECTED,     expected: true,  why: 'positive evidence still decides' },
+];
+
+for (const { classic, rulesets, expected, why } of TABLE) {
+  test(`resolveProtection(${classic}, ${rulesets}) -> ${expected} (${why})`, () => {
+    assert.equal(resolveProtection({ classic, rulesets }).protected, expected);
+  });
+}
+
+test('an unreadable source is never silently treated as unprotected', () => {
+  // The exact regression: rulesets 403 in an org, classic says no.
+  const r = resolveProtection({ classic: NOT_PROTECTED, rulesets: ERR });
+  assert.equal(r.protected, null);
+  assert.equal(r.source, 'partial');
+  assert.match(r.detail, /UNREADABLE/);
+
+  const v = evaluate({ pr: basePR, checks: green, branchProtected: r.protected });
+  assert.equal(ruleOf(v, 'branch-protected').status, UNKNOWN);
+  assert.equal(v.autoMergeSafe, false);
 });
 
-test('resolveProtection feeds the rule engine end to end', () => {
-  const unprotected = resolveProtection({ classicProtected: false, rules: [] });
+test('a disabled ruleset does not produce a false VERIFIED', () => {
+  const p = resolveProtection({
+    classic: readClassicProtection({ status: 200, body: { protected: false } }),
+    rulesets: readRulesetProtection({ status: 200, body: [{ enforcement: 'disabled' }] }),
+  });
+  assert.equal(p.protected, false);
   const v = evaluate({
     pr: basePR,
     checks: green,
-    branchProtected: unprotected.protected,
-    options: { protectionDetail: unprotected.detail },
+    branchProtected: p.protected,
+    options: { protectionDetail: p.detail },
   });
   assert.equal(ruleOf(v, 'branch-protected').status, BLOCKED);
-  assert.equal(v.pass, false);
-  assert.match(ruleOf(v, 'branch-protected').detail, /no classic protection/);
+});
 
-  const unreadable = resolveProtection({});
-  const v2 = evaluate({ pr: basePR, checks: green, branchProtected: unreadable.protected });
-  assert.equal(ruleOf(v2, 'branch-protected').status, UNKNOWN);
+test('resolveProtection defaults to UNKNOWN when given nothing', () => {
+  assert.equal(resolveProtection().protected, null);
+});
+
+// --- point 4: GitHub-level refusal is distinct from a gatekeeper block ---
+
+test('mergeable_state=blocked is reported separately from our rules', () => {
+  // Every rule passes, but protection requires a review the bot cannot give itself.
+  const v = evaluate({
+    pr: { ...basePR, mergeable_state: 'blocked' },
+    checks: green,
+    branchProtected: true,
+  });
+  assert.equal(v.pass, true);
+  assert.equal(v.autoMergeSafe, true, 'our policy is satisfied');
+  assert.equal(v.githubWillRefuse, 'blocked', 'but GitHub will still refuse');
+
+  const out = renderComment(v, { repo: 'o/r', prNumber: 1, autoMerge: true });
+  assert.match(out, /GitHub will refuse this merge/);
+  assert.match(out, /cannot approve its own pull/);
+});
+
+test('mergeable_state=behind is surfaced too', () => {
+  const v = evaluate({
+    pr: { ...basePR, mergeable_state: 'behind' },
+    checks: green,
+    branchProtected: true,
+  });
+  assert.equal(v.githubWillRefuse, 'behind');
+  assert.match(renderComment(v, {}), /behind its base/);
+});
+
+test('a clean PR reports no GitHub-level refusal', () => {
+  const v = evaluate({ pr: basePR, checks: green, branchProtected: true });
+  assert.equal(v.githubWillRefuse, null);
+  assert.doesNotMatch(renderComment(v, {}), /GitHub will refuse/);
 });

@@ -112,15 +112,36 @@ its documented responses are only `200`/`404`, so a token lacking rights can ans
 `404` — indistinguishable from "no protection configured".
 
 So the bot does **not** depend on it. It reads two endpoints available to a plain
-`contents: read` token and ORs them, since classic protection and rulesets are
-independent mechanisms:
+`contents: read` token, **tri-stating each one**:
 
-| Endpoint | Signal |
-| --- | --- |
-| `GET /repos/{o}/{r}/branches/{b}` | `.protected` (classic protection) |
-| `GET /repos/{o}/{r}/rules/branches/{b}` | non-empty list (rulesets) |
+| Endpoint | Signal | `ERR` when |
+| --- | --- | --- |
+| `GET /repos/{o}/{r}/branches/{b}` | `.protected` (classic protection) | any non-200 |
+| `GET /repos/{o}/{r}/rules/branches/{b}` | a rule with `enforcement: active` | any non-200 |
 
-`UNKNOWN` is reported only when **every** source is unreadable. No PAT is required.
+Only `active` rulesets count — a `disabled` or `evaluate` (dry-run) ruleset constrains
+nothing, and counting it would produce a confident **false** "protected".
+
+The two are combined conservatively, because an error must never collapse into "no":
+
+| classic | rulesets | verdict |
+| --- | --- | --- |
+| `PROTECTED` | any | protected |
+| any | `PROTECTED` | protected |
+| `NOT_PROTECTED` | `NOT_PROTECTED` | **not** protected |
+| `NOT_PROTECTED` | `ERR` | `UNKNOWN` — a half-read negative is a doubt |
+| `ERR` | `ERR` | `UNKNOWN` |
+
+No PAT is required. If your org policy makes the rulesets endpoint return `403`, the
+result is an honest `UNKNOWN` rather than a false verdict.
+
+### `autoMergeSafe` semantics
+
+`autoMergeSafe` means **this bot's policy is satisfied**. It does *not* promise GitHub
+will accept the merge: protection may additionally require an approving review, and a
+bot cannot approve its own PR. That case is reported separately as
+`githubWillRefuse` (derived from `mergeable_state`), and the bot does not fire a merge
+GitHub would reject — so a protection-level refusal is never mistaken for a bug.
 
 ### Tests
 

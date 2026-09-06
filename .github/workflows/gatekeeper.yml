@@ -16,15 +16,19 @@ on:
         description: Report only, do not comment or merge
         default: 'false'
 
+# Least privilege. `contents: write` is only needed to actually merge; leave it out
+# until auto-merge is enabled, and `contents: read` suffices for reporting.
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
   checks: read
   statuses: read
 
+# Scoped to PR *and* head sha: runs for different commits must not cancel each other,
+# and two runs for the same sha must not race on the comment.
 concurrency:
-  group: gatekeeper-${{ github.event.pull_request.number || inputs.pr_number || github.sha }}
-  cancel-in-progress: true
+  group: gatekeeper-${{ github.event.pull_request.number || inputs.pr_number || github.sha }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 
 jobs:
   gatekeeper:

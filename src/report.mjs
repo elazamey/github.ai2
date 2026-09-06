@@ -65,6 +65,23 @@ export function renderComment(verdict, ctx = {}) {
     );
   }
 
+  if (verdict.githubWillRefuse) {
+    const why =
+      verdict.githubWillRefuse === 'behind'
+        ? 'the branch is behind its base and protection requires it to be up to date'
+        : 'branch protection requirements are not met (most often a missing required review)';
+    lines.push(
+      '### ⛔ GitHub will refuse this merge',
+      '',
+      `\`mergeable_state: ${verdict.githubWillRefuse}\` — ${why}.`,
+      '',
+      '> This is enforced by GitHub, not by the gatekeeper. Every rule above may pass',
+      '> and the merge will still be rejected. A bot cannot approve its own pull',
+      '> request, so a PR authored by this bot needs a human approval.',
+      ''
+    );
+  }
+
   const { pending, failing, passing, total } = verdict.checks;
   lines.push(
     `**Checks:** ${passing.length} passing · ${failing.length} failing · ${pending.length} pending · ${total} total`,

@@ -17,7 +17,13 @@
  *   REQUIRE_BRANCH_PROTECTION  "true" (default) -> base branch must be protected
  */
 
-import { evaluate, normalizeChecks, resolveProtection } from '../src/rules.mjs';
+import {
+  evaluate,
+  normalizeChecks,
+  resolveProtection,
+  readClassicProtection,
+  readRulesetProtection,
+} from '../src/rules.mjs';
 import { renderComment } from '../src/report.mjs';
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
@@ -34,6 +40,8 @@ const MERGE_METHOD = process.env.MERGE_METHOD || 'squash';
 const REQUIRE_BRANCH_PROTECTION = bool(process.env.REQUIRE_BRANCH_PROTECTION, true);
 
 const MARKER = '<!-- pr-gatekeeper-bot -->';
+/** Per-sha marker, so the comment records which commit it describes. */
+const shaMarker = (sha) => `<!-- gk:${sha} -->`;
 
 function fail(msg) {
   console.error(`::error::${msg}`);
@@ -75,6 +83,26 @@ async function gh(path, { method = 'GET', body, allow404 = false, allow403 = fal
  */
 const SELF_CHECK = process.env.SELF_CHECK_NAME || 'gatekeeper';
 
+/** Like gh(), but never throws on HTTP errors: returns {status, body}. */
+async function ghRaw(path) {
+  const res = await fetch(`${API}${path}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'pr-gatekeeper-bot',
+    },
+  });
+  let body = null;
+  try {
+    const text = await res.text();
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = null;
+  }
+  return { status: res.status, body };
+}
+
 async function collectChecks(sha) {
   const [runs, statuses] = await Promise.all([
     gh(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`),
@@ -106,8 +134,11 @@ async function collectChecks(sha) {
   return normalized;
 }
 
-async function upsertComment(bodyText) {
-  const body = `${MARKER}\n${bodyText}`;
+async function upsertComment(bodyText, sha) {
+  // Identity comes from MARKER (stable across the PR) so exactly one comment is kept;
+  // the sha marker records which commit the report describes. Never rely on workspace
+  // state between runs.
+  const body = `${MARKER}${shaMarker(sha)}\n${bodyText}`;
   const comments = await gh(
     `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`
   );
@@ -129,27 +160,33 @@ async function upsertComment(bodyText) {
 async function main() {
   const pr = await gh(`/repos/${owner}/${repo}/pulls/${prNumber}`);
   const checks = await collectChecks(pr.head.sha);
-  // Protection is read from the two endpoints that need no admin rights, so the rule
-  // resolves under the plain GITHUB_TOKEN. The admin-only /protection endpoint is
-  // consulted only as a bonus; a 403/404 there is not treated as "unprotected".
-  const base = encodeURIComponent(pr.base.ref);
-  const [branchInfo, ruleset] = await Promise.all([
-    gh(`/repos/${owner}/${repo}/branches/${base}`, { allow404: true, allow403: true }),
-    gh(`/repos/${owner}/${repo}/rules/branches/${base}`, {
-      allow404: true,
-      allow403: true,
-    }),
+  // Protection is read from the two endpoints that need no admin rights. Each is
+  // tri-stated: an error must never be collapsed into "not protected".
+  const baseRef = encodeURIComponent(pr.base.ref);
+  const [branchRes, rulesRes] = await Promise.all([
+    ghRaw(`/repos/${owner}/${repo}/branches/${baseRef}`),
+    ghRaw(`/repos/${owner}/${repo}/rules/branches/${baseRef}?per_page=100`),
   ]);
 
-  const usable = (v) => v && !v.__forbidden;
   const protection = resolveProtection({
-    classicProtected: usable(branchInfo) ? Boolean(branchInfo.protected) : null,
-    rules: Array.isArray(ruleset) ? ruleset : null,
+    classic: readClassicProtection(branchRes),
+    rulesets: readRulesetProtection(rulesRes),
   });
+
+  for (const [name, res] of [
+    ['branches', branchRes],
+    ['rules', rulesRes],
+  ]) {
+    if (res.status !== 200) {
+      console.log(
+        `::warning::protection source "${name}" unreadable (HTTP ${res.status}) - not treated as unprotected`
+      );
+    }
+  }
 
   if (protection.protected === null) {
     console.log(
-      '::warning::branch protection unreadable from every source - rule is UNKNOWN (auto-merge withheld)'
+      `::warning::branch protection UNKNOWN (${protection.detail}) - auto-merge withheld`
     );
   } else {
     console.log(
@@ -194,7 +231,7 @@ async function main() {
   console.log(comment);
 
   if (!DRY_RUN) {
-    const action = await upsertComment(comment);
+    const action = await upsertComment(comment, pr.head.sha);
     console.log(`::notice::gatekeeper comment ${action}`);
   }
 
@@ -205,8 +242,17 @@ async function main() {
     );
   }
 
+  if (AUTO_MERGE && verdict.autoMergeSafe && verdict.githubWillRefuse) {
+    console.log(
+      `::warning::policy satisfied but GitHub reports mergeable_state=${verdict.githubWillRefuse}; ` +
+        'not attempting the merge (a bot cannot approve its own PR)'
+    );
+  }
+
   // autoMergeSafe (not `pass`) is the gate: an UNKNOWN security rule never merges.
-  if (verdict.autoMergeSafe && AUTO_MERGE && !DRY_RUN) {
+  // githubWillRefuse is checked too, so a protection-level refusal is reported as a
+  // precondition rather than as a failed API call.
+  if (verdict.autoMergeSafe && !verdict.githubWillRefuse && AUTO_MERGE && !DRY_RUN) {
     await gh(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
       method: 'PUT',
       body: { merge_method: MERGE_METHOD },

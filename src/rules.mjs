@@ -12,6 +12,12 @@
  * `pass` means "nothing is BLOCKED" (safe to merge by hand).
  * `autoMergeSafe` additionally requires that every rule is VERIFIED, so an
  * unverifiable security rule can never silently authorize an automated merge.
+ *
+ * SEMANTICS: `autoMergeSafe` states that *this bot's policy* is satisfied. It does
+ * NOT promise GitHub will accept the merge - branch protection may additionally
+ * require approving reviews, and a bot cannot approve its own pull request. That
+ * case is surfaced separately as `githubWillRefuse` (from `mergeable_state`) so a
+ * protection-level refusal is never mistaken for a gatekeeper bug.
  */
 
 export const VERIFIED = 'VERIFIED';
@@ -19,51 +25,100 @@ export const BLOCKED = 'BLOCKED';
 export const SKIPPED_WITH_WARNING = 'SKIPPED_WITH_WARNING';
 export const UNKNOWN = 'UNKNOWN';
 
+/** Per-source protection readings. An error must never collapse into "no". */
+export const PROTECTED = 'PROTECTED';
+export const NOT_PROTECTED = 'NOT_PROTECTED';
+export const ERR = 'ERR';
+
 /**
- * Resolves branch protection from several sources of differing trust.
+ * Interprets `GET /repos/{o}/{r}/branches/{b}` -> classic branch protection.
+ * @param {{status:number, body?:{protected?:boolean}}} res
+ */
+export function readClassicProtection(res) {
+  if (!res || res.status !== 200) return ERR;
+  return res.body?.protected ? PROTECTED : NOT_PROTECTED;
+}
+
+/**
+ * Interprets `GET /repos/{o}/{r}/rules/branches/{b}` -> rulesets.
  *
- * The admin-only `/protection` endpoint is not the only source of truth, and relying
- * on it alone is fragile: it 403s without admin rights, and its documented codes are
- * only 200/404 - so a fine-grained token can answer 404, which is indistinguishable
- * from "no protection configured". Two endpoints readable with plain `contents: read`
- * are more reliable here:
+ * A non-empty list is NOT sufficient: a ruleset may be `disabled`, or in `evaluate`
+ * (dry-run) mode, in which case it constrains nothing. Only `active` counts, otherwise
+ * we would confidently report a branch as protected when it is not - the same silent
+ * failure as before, merely inverted.
  *
- *   GET /repos/{o}/{r}/branches/{b}        -> .protected  (classic protection)
- *   GET /repos/{o}/{r}/rules/branches/{b}  -> []          (rulesets)
+ * Note the endpoint already returns only rules whose conditions match this branch,
+ * so no further condition matching is needed here.
  *
- * Classic branch protection and rulesets are independent; a branch may be governed by
- * either, so protection is the OR of both. Only when every source is unreadable do we
- * report `null` (UNKNOWN).
+ * @param {{status:number, body?:Array}} res
+ */
+export function readRulesetProtection(res) {
+  if (!res || res.status !== 200) return ERR;
+  if (!Array.isArray(res.body)) return ERR;
+  return res.body.some(isActive) ? PROTECTED : NOT_PROTECTED;
+}
+
+function isActive(rule) {
+  // The rules-for-branch endpoint reports enforcement on each entry; older payloads
+  // nest it. Absent enforcement info we refuse to assume "active".
+  const enforcement = rule?.enforcement ?? rule?.ruleset?.enforcement;
+  return enforcement === 'active';
+}
+
+/**
+ * Combines per-source readings into a single verdict.
  *
- * @param {{classicProtected?:boolean|null, rules?:Array|null}} sources
+ * Rules:
+ *   - any source says PROTECTED            -> PROTECTED   (mechanisms are independent, so OR)
+ *   - no source could be read              -> UNKNOWN
+ *   - a source errored and none said yes   -> UNKNOWN     (a half-read is a doubt, not a "no")
+ *   - all sources read and all say no      -> NOT_PROTECTED
+ *
+ * The third case is the important one: an org policy or fine-grained token can 403 the
+ * rulesets endpoint, and treating that as "no rulesets" would yield a confident verdict
+ * from half the evidence.
+ *
+ * @param {{classic?:string, rulesets?:string}} readings
  * @returns {{protected: boolean|null, source: string, detail: string}}
  */
-export function resolveProtection({ classicProtected = null, rules = null } = {}) {
-  const haveClassic = typeof classicProtected === 'boolean';
-  const haveRules = Array.isArray(rules);
+export function resolveProtection({ classic = ERR, rulesets = ERR } = {}) {
+  const sources = [
+    ['classic protection', classic],
+    ['rulesets', rulesets],
+  ];
 
-  if (!haveClassic && !haveRules) {
+  const describe = (name, state) =>
+    state === PROTECTED
+      ? `${name}: active`
+      : state === NOT_PROTECTED
+        ? `${name}: none`
+        : `${name}: UNREADABLE`;
+  const detail = sources.map(([n, v]) => describe(n, v)).join(', ');
+
+  const readable = sources.filter(([, v]) => v !== ERR);
+  const errored = sources.filter(([, v]) => v === ERR);
+
+  if (readable.some(([, v]) => v === PROTECTED)) {
     return {
-      protected: null,
-      source: 'none',
-      detail: 'no protection source was readable',
+      protected: true,
+      source: readable
+        .filter(([, v]) => v === PROTECTED)
+        .map(([n]) => n)
+        .join('+'),
+      detail,
     };
   }
 
-  const ruleCount = haveRules ? rules.length : 0;
-  const parts = [];
-  if (haveClassic) {
-    parts.push(classicProtected ? 'classic protection on' : 'no classic protection');
-  }
-  if (haveRules) {
-    parts.push(ruleCount ? `${ruleCount} ruleset rule(s)` : 'no ruleset rules');
+  if (readable.length === 0) {
+    return { protected: null, source: 'none', detail };
   }
 
-  return {
-    protected: Boolean(classicProtected) || ruleCount > 0,
-    source: haveClassic && haveRules ? 'branch+rulesets' : haveClassic ? 'branch' : 'rulesets',
-    detail: parts.join(', '),
-  };
+  if (errored.length > 0) {
+    // Partial evidence, all of it negative: not enough to declare "unprotected".
+    return { protected: null, source: 'partial', detail };
+  }
+
+  return { protected: false, source: 'branch+rulesets', detail };
 }
 
 /** Rules that must be VERIFIED before any automated merge, no matter the config. */
@@ -249,6 +304,13 @@ export function evaluate({
     (pr.labels || []).join(', ') || 'no labels'
   );
 
+  // GitHub's own view of the merge, independent of our rules. `blocked` here means
+  // protection requirements are unmet (typically a missing required review) - which a
+  // bot cannot resolve for its own PR.
+  const mergeableState = pr.mergeable_state;
+  const githubWillRefuse =
+    mergeableState === 'blocked' || mergeableState === 'behind' ? mergeableState : null;
+
   const blocked = rules.filter((r) => r.status === BLOCKED);
   const unverified = rules.filter(
     (r) => r.status === UNKNOWN || r.status === SKIPPED_WITH_WARNING
@@ -261,6 +323,7 @@ export function evaluate({
     pass,
     // An unverifiable rule must never authorize an automated merge.
     autoMergeSafe: pass && unverified.length === 0,
+    githubWillRefuse,
     blocked,
     unverified,
     criticalUnverified,
