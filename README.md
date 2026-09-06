@@ -104,14 +104,23 @@ PR_NUMBER=1 DRY_RUN=true npm run gatekeeper
 `DRY_RUN=true` prints the verdict without commenting or merging — the safest way to
 try it on a real PR.
 
-> **Reading branch protection requires admin rights, and the built-in `GITHUB_TOKEN`
-> cannot be granted them** — `administration` is not a valid `permissions:` key, and
-> adding it makes the whole workflow fail to start. So by default the API returns
-> `403`, the rule is recorded as `UNKNOWN` (neither pass nor failure), the comment
-> lists it under "Unverified rules", and auto-merge is withheld.
->
-> To verify `branch-protected` for real, add a PAT with `repo` scope as the
-> `GATEKEEPER_TOKEN` secret; the workflow prefers it over `GITHUB_TOKEN`.
+### How branch protection is detected
+
+`GET /branches/{b}/protection` needs **admin** rights, and `administration` is not a
+grantable `GITHUB_TOKEN` permission (adding it makes the workflow fail to start). Worse,
+its documented responses are only `200`/`404`, so a token lacking rights can answer
+`404` — indistinguishable from "no protection configured".
+
+So the bot does **not** depend on it. It reads two endpoints available to a plain
+`contents: read` token and ORs them, since classic protection and rulesets are
+independent mechanisms:
+
+| Endpoint | Signal |
+| --- | --- |
+| `GET /repos/{o}/{r}/branches/{b}` | `.protected` (classic protection) |
+| `GET /repos/{o}/{r}/rules/branches/{b}` | non-empty list (rulesets) |
+
+`UNKNOWN` is reported only when **every** source is unreadable. No PAT is required.
 
 ### Tests
 

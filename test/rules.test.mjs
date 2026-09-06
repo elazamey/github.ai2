@@ -4,6 +4,7 @@ import {
   evaluate,
   summarizeChecks,
   normalizeChecks,
+  resolveProtection,
   summarizeReviews,
   VERIFIED,
   BLOCKED,
@@ -304,4 +305,49 @@ test('normalizeChecks handles missing timestamps and empty input', () => {
     { name: 'a', status: 'completed', conclusion: 'failure' },
   ]);
   assert.equal(out.length, 1);
+});
+
+
+// --- resolveProtection: no admin rights required ---
+
+test('classic protection alone marks the branch protected', () => {
+  const r = resolveProtection({ classicProtected: true, rules: [] });
+  assert.equal(r.protected, true);
+});
+
+test('a ruleset alone marks the branch protected', () => {
+  // Classic protection and rulesets are independent mechanisms.
+  const r = resolveProtection({ classicProtected: false, rules: [{ type: 'pull_request' }] });
+  assert.equal(r.protected, true);
+});
+
+test('both sources empty means genuinely unprotected, not unknown', () => {
+  const r = resolveProtection({ classicProtected: false, rules: [] });
+  assert.equal(r.protected, false);
+  assert.equal(r.source, 'branch+rulesets');
+});
+
+test('only UNKNOWN when every source is unreadable', () => {
+  assert.equal(resolveProtection({}).protected, null);
+  assert.equal(resolveProtection({ classicProtected: null, rules: null }).protected, null);
+  // A single readable source is still enough to decide.
+  assert.equal(resolveProtection({ classicProtected: true, rules: null }).protected, true);
+  assert.equal(resolveProtection({ classicProtected: null, rules: [] }).protected, false);
+});
+
+test('resolveProtection feeds the rule engine end to end', () => {
+  const unprotected = resolveProtection({ classicProtected: false, rules: [] });
+  const v = evaluate({
+    pr: basePR,
+    checks: green,
+    branchProtected: unprotected.protected,
+    options: { protectionDetail: unprotected.detail },
+  });
+  assert.equal(ruleOf(v, 'branch-protected').status, BLOCKED);
+  assert.equal(v.pass, false);
+  assert.match(ruleOf(v, 'branch-protected').detail, /no classic protection/);
+
+  const unreadable = resolveProtection({});
+  const v2 = evaluate({ pr: basePR, checks: green, branchProtected: unreadable.protected });
+  assert.equal(ruleOf(v2, 'branch-protected').status, UNKNOWN);
 });

@@ -17,7 +17,7 @@
  *   REQUIRE_BRANCH_PROTECTION  "true" (default) -> base branch must be protected
  */
 
-import { evaluate, normalizeChecks } from '../src/rules.mjs';
+import { evaluate, normalizeChecks, resolveProtection } from '../src/rules.mjs';
 import { renderComment } from '../src/report.mjs';
 
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
@@ -129,18 +129,34 @@ async function upsertComment(bodyText) {
 async function main() {
   const pr = await gh(`/repos/${owner}/${repo}/pulls/${prNumber}`);
   const checks = await collectChecks(pr.head.sha);
-  // Reading branch protection requires admin rights. Without them we can neither
-  // prove nor disprove protection, so the rule becomes UNKNOWN (never a silent pass).
-  const protection = await gh(
-    `/repos/${owner}/${repo}/branches/${encodeURIComponent(pr.base.ref)}/protection`,
-    { allow404: true, allow403: true }
-  );
-  const protectionUnknown = Boolean(protection?.__forbidden);
-  if (protectionUnknown) {
+  // Protection is read from the two endpoints that need no admin rights, so the rule
+  // resolves under the plain GITHUB_TOKEN. The admin-only /protection endpoint is
+  // consulted only as a bonus; a 403/404 there is not treated as "unprotected".
+  const base = encodeURIComponent(pr.base.ref);
+  const [branchInfo, ruleset] = await Promise.all([
+    gh(`/repos/${owner}/${repo}/branches/${base}`, { allow404: true, allow403: true }),
+    gh(`/repos/${owner}/${repo}/rules/branches/${base}`, {
+      allow404: true,
+      allow403: true,
+    }),
+  ]);
+
+  const usable = (v) => v && !v.__forbidden;
+  const protection = resolveProtection({
+    classicProtected: usable(branchInfo) ? Boolean(branchInfo.protected) : null,
+    rules: Array.isArray(ruleset) ? ruleset : null,
+  });
+
+  if (protection.protected === null) {
     console.log(
-      '::warning::token cannot read branch protection - rule marked UNKNOWN (auto-merge withheld)'
+      '::warning::branch protection unreadable from every source - rule is UNKNOWN (auto-merge withheld)'
+    );
+  } else {
+    console.log(
+      `::notice::branch protection: ${protection.protected} via ${protection.source} (${protection.detail})`
     );
   }
+
   const reviews = await gh(
     `/repos/${owner}/${repo}/pulls/${prNumber}/reviews?per_page=100`
   );
@@ -158,11 +174,14 @@ async function main() {
       labels: (pr.labels || []).map((l) => l.name),
     },
     checks,
-    branchProtected: protectionUnknown ? null : Boolean(protection),
+    branchProtected: protection.protected,
     reviews: (reviews || []).map((r) => ({ state: r.state, user: r.user?.login })),
     // Left at the configured value: an unreadable protection API yields
     // branchProtected=null -> UNKNOWN, which is handled by the rule engine.
-    options: { requireBranchProtection: REQUIRE_BRANCH_PROTECTION },
+    options: {
+      requireBranchProtection: REQUIRE_BRANCH_PROTECTION,
+      protectionDetail: protection.detail,
+    },
   });
 
   const comment = renderComment(verdict, {

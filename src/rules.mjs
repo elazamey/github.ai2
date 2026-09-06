@@ -19,6 +19,53 @@ export const BLOCKED = 'BLOCKED';
 export const SKIPPED_WITH_WARNING = 'SKIPPED_WITH_WARNING';
 export const UNKNOWN = 'UNKNOWN';
 
+/**
+ * Resolves branch protection from several sources of differing trust.
+ *
+ * The admin-only `/protection` endpoint is not the only source of truth, and relying
+ * on it alone is fragile: it 403s without admin rights, and its documented codes are
+ * only 200/404 - so a fine-grained token can answer 404, which is indistinguishable
+ * from "no protection configured". Two endpoints readable with plain `contents: read`
+ * are more reliable here:
+ *
+ *   GET /repos/{o}/{r}/branches/{b}        -> .protected  (classic protection)
+ *   GET /repos/{o}/{r}/rules/branches/{b}  -> []          (rulesets)
+ *
+ * Classic branch protection and rulesets are independent; a branch may be governed by
+ * either, so protection is the OR of both. Only when every source is unreadable do we
+ * report `null` (UNKNOWN).
+ *
+ * @param {{classicProtected?:boolean|null, rules?:Array|null}} sources
+ * @returns {{protected: boolean|null, source: string, detail: string}}
+ */
+export function resolveProtection({ classicProtected = null, rules = null } = {}) {
+  const haveClassic = typeof classicProtected === 'boolean';
+  const haveRules = Array.isArray(rules);
+
+  if (!haveClassic && !haveRules) {
+    return {
+      protected: null,
+      source: 'none',
+      detail: 'no protection source was readable',
+    };
+  }
+
+  const ruleCount = haveRules ? rules.length : 0;
+  const parts = [];
+  if (haveClassic) {
+    parts.push(classicProtected ? 'classic protection on' : 'no classic protection');
+  }
+  if (haveRules) {
+    parts.push(ruleCount ? `${ruleCount} ruleset rule(s)` : 'no ruleset rules');
+  }
+
+  return {
+    protected: Boolean(classicProtected) || ruleCount > 0,
+    source: haveClassic && haveRules ? 'branch+rulesets' : haveClassic ? 'branch' : 'rulesets',
+    detail: parts.join(', '),
+  };
+}
+
 /** Rules that must be VERIFIED before any automated merge, no matter the config. */
 export const SECURITY_CRITICAL = new Set(['branch-protected']);
 
@@ -152,12 +199,13 @@ export function evaluate({
   // to read the protection API, which is NOT the same as "protected".
   {
     const label = `Base branch \`${pr.base}\` is protected`;
+    const note = options.protectionDetail ? ` (${options.protectionDetail})` : '';
     if (branchProtected === null || branchProtected === undefined) {
       push(
         'branch-protected',
         UNKNOWN,
         label,
-        'could not read branch protection (insufficient token permissions) - auto-merge withheld'
+        'could not read branch protection from any source - auto-merge withheld'
       );
     } else if (!requireBranchProtection) {
       push(
@@ -173,7 +221,7 @@ export function evaluate({
         'branch-protected',
         branchProtected ? VERIFIED : BLOCKED,
         label,
-        branchProtected ? 'protection rules active' : 'NO branch protection configured'
+        (branchProtected ? 'protection active' : 'NO branch protection configured') + note
       );
     }
   }
